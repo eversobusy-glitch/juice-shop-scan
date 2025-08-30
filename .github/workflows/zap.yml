@@ -11,6 +11,8 @@ jobs:
   zap:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: Check target is reachable
         id: check
         run: |
@@ -23,26 +25,17 @@ jobs:
             echo "Target not reachable, will skip scan ❌"
           fi
 
-      - name: Install jq (for summary)
-        if: steps.check.outputs.ok == 'true'
-        run: sudo apt-get update && sudo apt-get install -y jq
-
-      - name: ZAP Baseline Scan (HTML + JSON, no GitHub issues)
-        if: steps.check.outputs.ok == 'true'
-        uses: zaproxy/action-baseline@v0.9.0
-        with:
-          target: ${{ env.TARGET }}
-          allow_issue_writing: false
-          # -a: auto | -m 5: max 5 mins | -J/-r: write JSON/HTML reports
-          cmd_options: "-a -m 5 -J zap-baseline.json -r zap-baseline.html"
-        continue-on-error: true
-
-      - name: Add ZAP summary to job summary
+      # 👉 Run the Docker image directly so reports land in $GITHUB_WORKSPACE
+      - name: ZAP Baseline via Docker (writes HTML/JSON)
         if: steps.check.outputs.ok == 'true'
         run: |
-          echo "### ZAP Baseline summary" >> $GITHUB_STEP_SUMMARY
-          jq -r '.site[0].alerts[] | "- \(.risk) \(.alert): \(.instances|length) occurrences"' zap-baseline.json \
-            | sort | uniq -c | sort -nr | head -n 10 >> $GITHUB_STEP_SUMMARY || echo "No alerts" >> $GITHUB_STEP_SUMMARY
+          docker pull owasp/zap2docker-stable
+          docker run --user root --rm -v "$PWD:/zap/wrk" owasp/zap2docker-stable zap-baseline.py \
+            -t "${TARGET}" -a -m 5 -J zap-baseline.json -r zap-baseline.html
+
+      - name: Show generated files
+        if: steps.check.outputs.ok == 'true'
+        run: ls -la
 
       - name: Upload ZAP artifacts
         if: steps.check.outputs.ok == 'true'
@@ -52,6 +45,14 @@ jobs:
           path: |
             zap-baseline.html
             zap-baseline.json
+
+      - name: Add ZAP summary to job summary
+        if: steps.check.outputs.ok == 'true'
+        run: |
+          sudo apt-get update && sudo apt-get install -y jq
+          echo "### ZAP Baseline summary" >> $GITHUB_STEP_SUMMARY
+          jq -r '.site[0].alerts[] | "- \(.risk) \(.alert): \(.instances|length) occurrences"' zap-baseline.json \
+            | sort | uniq -c | sort -nr | head -n 12 >> $GITHUB_STEP_SUMMARY || echo "No alerts" >> $GITHUB_STEP_SUMMARY
 
       - name: Note if skipped
         if: steps.check.outputs.ok != 'true'
