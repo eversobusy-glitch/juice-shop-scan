@@ -1,5 +1,4 @@
 name: OSV Scanner (SCA)
-
 on:
   push:
     branches: [ master, main ]
@@ -11,6 +10,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify package.json at root
+        run: |
+          test -f package.json && echo "Found package.json ✅" || (echo "package.json NOT at root ❌"; exit 1)
+
+      - name: Setup Node (LTS)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      # Create a lockfile without building or running scripts (safe & fast)
+      - name: Generate package-lock.json (no install)
+        run: npm install --package-lock-only --ignore-scripts
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
       - name: Install OSV-Scanner
         run: |
           curl -sSfL https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_amd64 -o osv-scanner
@@ -18,25 +33,33 @@ jobs:
           sudo mv osv-scanner /usr/local/bin/
           osv-scanner --version
 
-      - name: Run OSV-Scanner (repo root)
+      # Scan both the lockfile (best results) and the repo as fallback
+      - name: Run OSV-Scanner (lockfile + recursive)
         run: |
-          osv-scanner --recursive . --format json > osv-results.json || true
-          jq 'del(.results[]?.packages[]?.package_path)' osv-results.json > osv-results-clean.json || cp osv-results.json osv-results-clean.json
+          osv-scanner --lockfile=package-lock.json --format json > osv-lock.json || true
+          osv-scanner --recursive . --format json > osv-recursive.json || true
+          # Merge results from both scans
+          jq -s '{"results": (.[0].results // []) + (.[1].results // [])}' osv-lock.json osv-recursive.json > osv-results.json
+          # Make a cleaner copy for screenshots
+          jq 'del(.results[]?.packages[]?.package_path)' osv-results.json > osv-results-clean.json
 
-      - name: Upload OSV results
+      - name: Upload OSV results (artifact)
         uses: actions/upload-artifact@v4
         with:
           name: osv-results
           path: |
             osv-results.json
             osv-results-clean.json
-            
+            package-lock.json
+
+      # 👇 This is the Step 5 "quality-of-life" summary
       - name: Add CVE list to job summary
         run: |
-          echo "### OSV Scanner — CVE IDs (unique)" >> $GITHUB_STEP_SUMMARY
-          jq -r '.results[]?.packages[]? 
-                 | .package.name as $pkg 
-                 | .vulnerabilities[]? 
-                 | "- \($pkg) : \(.id) (fixed: \(.fixedVersion // "n/a"))"' \
-                 osv-results-clean.json \
-            | sort -u >> $GITHUB_STEP_SUMMARY || echo "No CVEs found" >> $GITHUB_STEP_SUMMARY
+          echo "### OSV Scanner — CVE Summary" >> $GITHUB_STEP_SUMMARY
+          jq -r '
+            .results[]?.packages[]? as $p
+            | $p.package.name as $pkg
+            | $p.vulnerabilities[]?
+            | "- \($pkg) : \(.id) | fixed: \(.fixedVersion // \"n/a\") | severity: \((.severity[0].score // .database_specific.severity // \"n/a\"))"
+          ' osv-results-clean.json | sort -u >> $GITHUB_STEP_SUMMARY || echo "No CVEs found" >> $GITHUB_STEP_SUMMARY
+
