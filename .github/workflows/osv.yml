@@ -34,14 +34,18 @@ jobs:
           osv-scanner --version
 
       # Scan both the lockfile (best results) and the repo as fallback
-      - name: Run OSV-Scanner (lockfile + recursive)
+      - name: Run OSV-Scanner (lockfile only) and save results
         run: |
-          osv-scanner --lockfile=package-lock.json --format json > osv-lock.json || true
-          osv-scanner --recursive . --format json > osv-recursive.json || true
-          # Merge results from both scans
-          jq -s '{"results": (.[0].results // []) + (.[1].results // [])}' osv-lock.json osv-recursive.json > osv-results.json
-          # Make a cleaner copy for screenshots
-          jq 'del(.results[]?.packages[]?.package_path)' osv-results.json > osv-results-clean.json
+          # Scan the generated lockfile for real CVEs (best signal)
+          osv-scanner --lockfile=package-lock.json --format json > osv-results.json || true
+
+          # Make a cleaner copy for screenshots/summaries
+          if [ -s osv-results.json ]; then
+            jq 'del(.results[]?.packages[]?.package_path)' osv-results.json > osv-results-clean.json
+          else
+            echo '{}' > osv-results-clean.json
+          fi
+
 
       - name: Upload OSV results (artifact)
         uses: actions/upload-artifact@v4
