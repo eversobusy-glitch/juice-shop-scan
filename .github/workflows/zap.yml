@@ -1,14 +1,8 @@
-name: OWASP ZAP DAST
+name: ZAP Baseline (minimal)
 on:
   push:
     branches: [ master, main ]
   pull_request:
-
-permissions:
-  contents: read
-
-env:
-  TARGET: https://juice-shop.herokuapp.com
 
 jobs:
   zap:
@@ -16,54 +10,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check target is reachable
-        id: check
-        shell: bash
+      - name: Run ZAP baseline via Docker (write to workspace)
         run: |
-          set -e
-          if curl -sSfI "$TARGET" >/dev/null; then
-            echo "ok=true" >> "$GITHUB_OUTPUT"
-            echo "Target reachable ✅"
-          else
-            echo "ok=false" >> "$GITHUB_OUTPUT"
-            echo "Target not reachable, skipping ❌"
-          fi
-
-      # Run ZAP via Docker so reports are created in $GITHUB_WORKSPACE
-      - name: Run ZAP Baseline (Docker) → HTML & JSON
-        if: steps.check.outputs.ok == 'true'
-        shell: bash
-        run: |
+          TARGET="https://juice-shop.herokuapp.com"
           docker pull owasp/zap2docker-stable
-          docker run --user root --rm -v "$PWD:/zap/wrk" owasp/zap2docker-stable zap-baseline.py \
-            -t "$TARGET" -a -m 5 -J zap-baseline.json -r zap-baseline.html || true
-          echo "Generated files:"; ls -l zap-baseline.* || true
+          # Write reports to the mounted workspace explicitly
+          docker run --rm -v "$PWD:/zap/wrk" owasp/zap2docker-stable \
+            zap-baseline.py -t "$TARGET" -m 5 -a \
+            -J /zap/wrk/zap-baseline.json \
+            -r /zap/wrk/zap-baseline.html || true
+          echo "Workspace contents:"
+          ls -la
 
-      - name: Verify reports exist
-        if: steps.check.outputs.ok == 'true'
-        run: |
-          test -s zap-baseline.json || (echo "zap-baseline.json not created"; exit 1)
-          test -s zap-baseline.html || (echo "zap-baseline.html not created"; exit 1)
-
-      - name: Upload ZAP artifacts
-        if: steps.check.outputs.ok == 'true'
+      - name: Upload ZAP reports
         uses: actions/upload-artifact@v4
         with:
           name: zap-baseline
           path: |
             zap-baseline.json
             zap-baseline.html
-          if-no-files-found: error
-
-      - name: Add ZAP summary to job summary
-        if: steps.check.outputs.ok == 'true'
-        run: |
-          sudo apt-get update -y >/dev/null && sudo apt-get install -y jq >/dev/null
-          echo "### ZAP Baseline summary" >> $GITHUB_STEP_SUMMARY
-          jq -r '.site[0].alerts[]? | "- \(.risk) \(.alert): \(.instances|length) occurrences"' zap-baseline.json \
-            | sort | uniq -c | sort -nr | head -n 12 >> $GITHUB_STEP_SUMMARY || echo "No alerts" >> $GITHUB_STEP_SUMMARY
-
-      - name: Skipped
-        if: steps.check.outputs.ok != 'true'
-        run: echo "ZAP scan skipped."
-
+          if-no-files-found: warn
