@@ -1,4 +1,4 @@
-name: ZAP Baseline (minimal)
+name: ZAP Baseline (minimal, robust)
 on:
   push:
     branches: [ master, main ]
@@ -10,24 +10,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Run the official ZAP baseline action, no GitHub Issues, short scan.
-      - name: Run ZAP baseline
-        uses: zaproxy/action-baseline@v0.9.0
-        with:
-          target: https://juice-shop.herokuapp.com
-          allow_issue_writing: false
-          # -a = auto; -m 5 = ~5 min max; write reports with these names
-          cmd_options: "-a -m 5 -J zap-baseline.json -r zap-baseline.html"
-        continue-on-error: true   # <- even if ZAP returns a non-zero exit, keep going
+      - name: ZAP via Docker → write reports to workspace
+        shell: bash
+        run: |
+          set +e
+          TARGET="https://juice-shop.herokuapp.com"
 
-      # Upload reports regardless of ZAP exit code; use globs in case the action
-      # writes them into a subfolder.
+          echo "Pulling ZAP image…"
+          docker pull owasp/zap2docker-stable || true
+
+          echo "Running baseline scan…"
+          docker run --rm -v "$PWD:/zap/wrk" owasp/zap2docker-stable \
+            zap-baseline.py -t "$TARGET" -m 5 -a \
+            -J /zap/wrk/zap-baseline.json \
+            -r /zap/wrk/zap-baseline.html || true
+
+          echo "Workspace after scan:"
+          ls -la
+
+          # Guaranteed outputs (create placeholders if ZAP didn't write them)
+          [ -s zap-baseline.json ] || echo '{"note":"ZAP did not produce JSON (site unreachable or Docker/network issue)."}' > zap-baseline.json
+          [ -s zap-baseline.html ] || echo '<html><body><p>ZAP did not produce HTML (see job logs).</p></body></html>' > zap-baseline.html
+
       - name: Upload ZAP reports
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: zap-baseline
           path: |
-            **/zap-baseline.html
-            **/zap-baseline.json
+            zap-baseline.json
+            zap-baseline.html
           if-no-files-found: warn
