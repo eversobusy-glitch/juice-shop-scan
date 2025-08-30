@@ -1,0 +1,35 @@
+name: OWASP ZAP DAST
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+
+env:
+  TARGET: https://juice-shop.herokuapp.com
+
+jobs:
+  zap:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check target is reachable
+        id: check
+        run: |
+          set -e
+          if curl -sSfI "$TARGET" >/dev/null; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+            echo "Target reachable ✅"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "Target not reachable, will skip scan ❌"
+          fi
+
+      - name: ZAP Baseline Scan
+        if: steps.check.outputs.ok == 'true'
+        uses: zaproxy/action-baseline@v0.9.0
+        with:
+          target: ${{ env.TARGET }}
+        continue-on-error: true
+
+      - name: Note if skipped
+        if: steps.check.outputs.ok != 'true'
+        run: echo "ZAP scan skipped due to target unreachable."
