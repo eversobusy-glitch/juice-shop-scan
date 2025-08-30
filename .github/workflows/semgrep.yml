@@ -15,14 +15,19 @@ jobs:
         uses: returntocorp/semgrep-action@v1
         with:
           config: "p/owasp-top-ten"
-          generateSarif: true
+          # Write SARIF to a file we can upload
+          args: "--sarif --output semgrep.sarif"
         env:
           SEMGREP_ENABLE_VERSION_CHECK: "0"
-        continue-on-error: true   # ← don't fail the job even if findings
+        continue-on-error: true   # findings won't fail the job
+
+      - name: Show files (debug)
+        run: ls -la
 
       - name: Upload Semgrep SARIF
-        if: ${{ always() }}        # ← still upload even if step above flagged
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: semgrep-sarif
           path: semgrep.sarif
+
