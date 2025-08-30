@@ -30,3 +30,13 @@ jobs:
           path: |
             osv-results.json
             osv-results-clean.json
+            
+      - name: Add CVE list to job summary
+        run: |
+          echo "### OSV Scanner — CVE IDs (unique)" >> $GITHUB_STEP_SUMMARY
+          jq -r '.results[]?.packages[]? 
+                 | .package.name as $pkg 
+                 | .vulnerabilities[]? 
+                 | "- \($pkg) : \(.id) (fixed: \(.fixedVersion // "n/a"))"' \
+                 osv-results-clean.json \
+            | sort -u >> $GITHUB_STEP_SUMMARY || echo "No CVEs found" >> $GITHUB_STEP_SUMMARY
