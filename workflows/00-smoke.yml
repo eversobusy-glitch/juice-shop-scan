@@ -1,0 +1,23 @@
+name: CI smoke & integrity
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show repo layout
+        run: |
+          echo "PWD: $(pwd)"
+          ls -la
+
+      - name: Verify package.json is at repo root
+        run: |
+          test -f package.json && echo "Found package.json ✅" || (echo "package.json NOT found at root ❌"; exit 1)
+
+      - run: echo "Actions are working ✅"
