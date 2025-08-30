@@ -10,23 +10,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run ZAP baseline via Docker (write to workspace)
-        run: |
-          TARGET="https://juice-shop.herokuapp.com"
-          docker pull owasp/zap2docker-stable
-          # Write reports to the mounted workspace explicitly
-          docker run --rm -v "$PWD:/zap/wrk" owasp/zap2docker-stable \
-            zap-baseline.py -t "$TARGET" -m 5 -a \
-            -J /zap/wrk/zap-baseline.json \
-            -r /zap/wrk/zap-baseline.html || true
-          echo "Workspace contents:"
-          ls -la
+      # Run the official ZAP baseline action, no GitHub Issues, short scan.
+      - name: Run ZAP baseline
+        uses: zaproxy/action-baseline@v0.9.0
+        with:
+          target: https://juice-shop.herokuapp.com
+          allow_issue_writing: false
+          # -a = auto; -m 5 = ~5 min max; write reports with these names
+          cmd_options: "-a -m 5 -J zap-baseline.json -r zap-baseline.html"
+        continue-on-error: true   # <- even if ZAP returns a non-zero exit, keep going
 
+      # Upload reports regardless of ZAP exit code; use globs in case the action
+      # writes them into a subfolder.
       - name: Upload ZAP reports
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: zap-baseline
           path: |
-            zap-baseline.json
-            zap-baseline.html
+            **/zap-baseline.html
+            **/zap-baseline.json
           if-no-files-found: warn
