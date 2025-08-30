@@ -1,0 +1,32 @@
+name: OSV Scanner (SCA)
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+
+jobs:
+  osv-scanner:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install OSV-Scanner
+        run: |
+          curl -sSfL https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_amd64 -o osv-scanner
+          chmod +x osv-scanner
+          sudo mv osv-scanner /usr/local/bin/
+          osv-scanner --version
+
+      - name: Run OSV-Scanner (repo root)
+        run: |
+          osv-scanner --recursive . --format json > osv-results.json || true
+          jq 'del(.results[]?.packages[]?.package_path)' osv-results.json > osv-results-clean.json || cp osv-results.json osv-results-clean.json
+
+      - name: Upload OSV results
+        uses: actions/upload-artifact@v4
+        with:
+          name: osv-results
+          path: |
+            osv-results.json
+            osv-results-clean.json
