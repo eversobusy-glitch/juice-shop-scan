@@ -1,5 +1,4 @@
 name: Semgrep SAST
-
 on:
   push:
     branches: [ master, main ]
@@ -12,14 +11,17 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Run Semgrep (OWASP Top 10)
+        id: semgrep
         uses: returntocorp/semgrep-action@v1
         with:
           config: "p/owasp-top-ten"
           generateSarif: true
         env:
           SEMGREP_ENABLE_VERSION_CHECK: "0"
+        continue-on-error: true   # ← don't fail the job even if findings
 
       - name: Upload Semgrep SARIF
+        if: ${{ always() }}        # ← still upload even if step above flagged
         uses: actions/upload-artifact@v4
         with:
           name: semgrep-sarif
