@@ -50,15 +50,52 @@ jobs:
             osv-results-clean.json
 
       # Step 8: Append a human-readable CVE summary to the GitHub job page
-      - name: Add CVE list to job summary
+      - name: Add CVE list to job summary (Critical only + prefer CVE IDs)
+        shell: bash
         run: |
-          echo "### OSV Scanner — CVE Summary" >> $GITHUB_STEP_SUMMARY
+          set -eo pipefail
 
-          # Extract CVE details and format them for readability
-          jq -r '
-            .results[]?.packages[]? as $p
-            | $p.package.name as $pkg
+          echo "## OSV Scanner — Critical CVEs" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          rows="$(jq -r '
+            # Prefer a human-readable severity if present, else show the CVSS string/score
+            def sev:
+              (.database_specific.severity // (.severity[]?.score // "n/a"));
+
+            # Extract a fixed version from the usual places
+            def fixed:
+              (.fixedVersion // (.affected[]?.ranges[]?.events[]? | select(has("fixed")) | .fixed) // "n/a");
+
+            # Prefer a CVE if present; otherwise fall back to advisory ID (GHSA/OSV)
+            def cve:
+              ((.aliases[]? | select(startswith("CVE-"))) // .id // "n/a");
+
+            # Decide if this vulnerability is Critical:
+            # - explicit string "CRITICAL" in database_specific.severity OR severity[].score
+            # - OR a numeric score >= 9.0 (when score is numeric rather than a vector)
+            def iscrit:
+              ((.database_specific.severity // "" | ascii_upcase) == "CRITICAL")
+              or ((.severity[]?.score // "" | ascii_upcase) == "CRITICAL")
+              or (((.severity[]?.score // empty)
+                    | capture("(?<num>[0-9]+\\.[0-9]+)")?  # extract number if present
+                    | .num? | tonumber? ) // 0) >= 9.0;
+
+            .results[]?
+            | .packages[]? as $p
+            | ($p.package.name // "n/a") as $pkg
+            | ($p.package.version // "n/a") as $ver
             | $p.vulnerabilities[]?
-            | "- \($pkg) : \(.id) | fixed: \(.fixedVersion // \"n/a\") | severity: \((.severity[0].score // .database_specific.severity // \"n/a\"))"
-          ' osv-results-clean.json | sort -u >> $GITHUB_STEP_SUMMARY \
-          || echo "No CVEs found" >> $GITHUB_STEP_SUMMARY
+            | select(iscrit)
+            | "| \($pkg) | \($ver) | \(cve) | \(sev) | \(fixed) |"
+          ' osv-results.json || true)"
+
+          if [ -z "$rows" ]; then
+            echo "_No Critical CVEs found._" >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "| Package | Version | CVE | Severity | Fixed |"
+              echo "|---|---|---|---|---|"
+              printf "%s\n" "$rows" | sort -u
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
