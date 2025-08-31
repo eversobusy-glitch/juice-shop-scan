@@ -51,14 +51,37 @@ jobs:
 
       # Step 8: Append a human-readable CVE summary to the GitHub job page
       - name: Add CVE list to job summary
+        shell: bash
         run: |
-          echo "### OSV Scanner — CVE Summary" >> $GITHUB_STEP_SUMMARY
+          set -eo pipefail
 
-          # Extract CVE details and format them for readability
-          jq -r '
-            .results[]?.packages[]? as $p
-            | $p.package.name as $pkg
-            | $p.vulnerabilities[]?
-            | "- \($pkg) : \(.id) | fixed: \(.fixedVersion // \"n/a\") | severity: \((.severity[0].score // .database_specific.severity // \"n/a\"))"
-          ' osv-results-clean.json | sort -u >> $GITHUB_STEP_SUMMARY \
-          || echo "No CVEs found" >> $GITHUB_STEP_SUMMARY
+          echo "## OSV Scanner — CVE Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          # Build Markdown table rows. We read osv-results.json (the raw file),
+          # but you can switch to osv-results-clean.json if you prefer.
+          rows="$(jq -r '
+            def sev:
+              # Prefer numeric CVSS, else string, else n/a
+              (.severity[]?.score // .database_specific.severity // "n/a");
+            def fixed:
+              # Prefer top-level fixedVersion, else any affected[].ranges[].events[].fixed, else n/a
+              (.fixedVersion // (.affected[]?.ranges[]?.events[]? | select(has("fixed")) | .fixed) // "n/a");
+            .results[]?                           # each source result
+            | .packages[]? as $p                  # each package result
+            | ($p.package.name // "n/a") as $pkg
+            | ($p.package.version // "n/a") as $ver
+            | $p.vulnerabilities[]?               # each vuln for that package
+            | "| \($pkg) | \($ver) | \(.id) | \(sev) | \(fixed) |"
+          ' osv-results.json || true)"
+
+          if [ -z "$rows" ]; then
+            echo "_No CVEs found._" >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "| Package | Version | CVE | Severity | Fixed |"
+              echo "|---|---|---|---|---|"
+              printf "%s\n" "$rows" | sort -u
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
