@@ -1,45 +1,48 @@
-name: ZAP Baseline (DAST)
+name: ZAP Baseline (DAST)  # Workflow name shown in GitHub Actions UI
 
 on:
-  push:
-    branches: [master, main]
-  pull_request:
+  push:                    # Trigger the workflow on push events
+    branches: [master, main]  # Only run on pushes to master or main branches
+  pull_request:            # Also run on pull requests targeting these branches
 
 jobs:
-  zap:
-    runs-on: ubuntu-latest
+  zap:                     # Job name: runs the ZAP Baseline scan
+    runs-on: ubuntu-latest # Use the latest Ubuntu runner provided by GitHub
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4  # Step 1: Check out the repository code
 
+      # Step 2: Run ZAP Baseline scan inside Docker
+      # This targets a public demo app (Juice Shop) and writes reports to the workspace
       - name: ZAP via Docker → write reports to workspace
         shell: bash
         run: |
-          set +e
-          TARGET="https://juice-shop.herokuapp.com"
+          set +e  # Allow script to continue even if ZAP exits with non-zero status
+          TARGET="https://juice-shop.herokuapp.com"  # Target URL for scanning
 
           echo "Pulling ZAP image…"
-          docker pull owasp/zap2docker-stable || true
+          docker pull owasp/zap2docker-stable || true  # Pull the latest stable ZAP image
 
           echo "Running baseline scan…"
           docker run --rm -v "$PWD:/zap/wrk" owasp/zap2docker-stable \
-            zap-baseline.py -t "$TARGET" -m 5 -a \
-            -J /zap/wrk/zap-baseline.json \
-            -r /zap/wrk/zap-baseline.html || true
+            zap-baseline.py -t "$TARGET" -m 5 -a \  # Run passive scan with 5-minute spidering
+            -J /zap/wrk/zap-baseline.json \         # Output machine-readable JSON report
+            -r /zap/wrk/zap-baseline.html || true   # Output human-readable HTML report
 
           echo "Workspace after scan:"
-          ls -la
+          ls -la  # List contents of workspace for visibility in logs
 
-          # Guaranteed outputs (create placeholders if ZAP didn't write them)
+          # Step 3: Ensure output files exist (create placeholders if scan failed)
           [ -s zap-baseline.json ] || echo '{"note":"ZAP did not produce JSON (site unreachable or Docker/network issue)."}' > zap-baseline.json
           [ -s zap-baseline.html ] || echo '<html><body><p>ZAP did not produce HTML (see job logs).</p></body></html>' > zap-baseline.html
 
+      # Step 4: Upload scan reports as artifacts for download or inspection
       - name: Upload ZAP reports
-        if: ${{ always() }}
+        if: ${{ always() }}  # Always run this step, even if previous steps failed
         uses: actions/upload-artifact@v4
         with:
-          name: zap-baseline
-          path: |
+          name: zap-baseline  # Artifact name shown in GitHub UI
+          path: |             # Files to upload
             zap-baseline.json
             zap-baseline.html
-          if-no-files-found: warn
+          if-no-files-found: warn  # Warn if files are missing, but don’t fail the job
