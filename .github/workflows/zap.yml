@@ -1,4 +1,4 @@
-name: ZAP Baseline
+name: ZAP Baseline (DAST)
 
 on:
   push:
