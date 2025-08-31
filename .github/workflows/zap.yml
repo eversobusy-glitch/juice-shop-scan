@@ -1,12 +1,14 @@
-# .github/workflows/zap.yml
 name: OWASP ZAP DAST
+
 on:
-  push: { branches: [ master, main ] }
+  push:
+    branches: [master, main]
   pull_request:
 
 jobs:
   zap:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -15,12 +17,18 @@ jobs:
       - name: ZAP baseline via Docker → write reports
         run: |
           TARGET="https://juice-shop.herokuapp.com"
+
+          echo "Pulling ZAP Docker image..."
           docker pull owasp/zap2docker-stable
+
+          echo "Running baseline scan..."
           docker run --rm -v "$PWD:/zap/wrk" owasp/zap2docker-stable zap-baseline.py \
             -t "$TARGET" -a -m 5 \
             -J /zap/wrk/zap-baseline.json \
-            -r /zap/wrk/zap-baseline.html || true   # keep CI green even if ZAP exits non-zero
-          echo "Workspace contents:"; ls -la
+            -r /zap/wrk/zap-baseline.html || true  # keep CI green even if ZAP exits non-zero
+
+          echo "Workspace contents:"
+          ls -la
 
       # Upload both human- and machine-readable reports
       - name: Upload ZAP reports
