@@ -1,5 +1,5 @@
 # .github/workflows/00-smoke.yml
-name: CI smoke & integrity  # Workflow name shown in GitHub Actions UI
+name: Smoke & integrity (CI)  # Workflow name shown in GitHub Actions UI
 
 on:
   push:                     # Trigger the workflow on push events
