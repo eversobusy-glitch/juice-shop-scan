@@ -1,69 +1,33 @@
-name: OSV Scanner (SCA)
-
+# .github/workflows/zap.yml
+name: OWASP ZAP DAST
 on:
-  push:
-    branches: [master, main]
+  push: { branches: [ master, main ] }
   pull_request:
 
 jobs:
-  osv-scanner:
+  zap:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify package.json at root
+      # Run the official ZAP baseline inside Docker.
+      # We scan the public Juice Shop demo to simulate a real target.
+      - name: ZAP baseline via Docker → write reports
         run: |
-          test -f package.json && echo "Found package.json ✅" || (echo "package.json NOT at root ❌"; exit 1)
+          TARGET="https://juice-shop.herokuapp.com"
+          docker pull owasp/zap2docker-stable
+          docker run --rm -v "$PWD:/zap/wrk" owasp/zap2docker-stable zap-baseline.py \
+            -t "$TARGET" -a -m 5 \
+            -J /zap/wrk/zap-baseline.json \
+            -r /zap/wrk/zap-baseline.html || true   # keep CI green even if ZAP exits non-zero
+          echo "Workspace contents:"; ls -la
 
-      - name: Setup Node (LTS)
-        uses: actions/setup-node@v4
-        with:
-          node-version: 18
-
-      # Create a lockfile without building or running scripts (safe & fast)
-      - name: Generate package-lock.json (no install)
-        run: npm install --package-lock-only --ignore-scripts
-
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
-
-      - name: Install OSV-Scanner
-        run: |
-          curl -sSfL https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_amd64 -o osv-scanner
-          chmod +x osv-scanner
-          sudo mv osv-scanner /usr/local/bin/
-          osv-scanner --version
-
-      # Scan both the lockfile (best results) and the repo as fallback
-      - name: Run OSV-Scanner (lockfile only) and save results
-        run: |
-          # Scan the generated lockfile for real CVEs (best signal)
-          osv-scanner --lockfile=package-lock.json --format json > osv-results.json || true
-
-          # Make a cleaner copy for screenshots/summaries
-          if [ -s osv-results.json ]; then
-            jq 'del(.results[]?.packages[]?.package_path)' osv-results.json > osv-results-clean.json
-          else
-            echo '{}' > osv-results-clean.json
-          fi
-
-      - name: Upload OSV results (artifact)
+      # Upload both human- and machine-readable reports
+      - name: Upload ZAP reports
         uses: actions/upload-artifact@v4
         with:
-          name: osv-results
+          name: zap-baseline
           path: |
-            osv-results.json
-            osv-results-clean.json
-            package-lock.json
-
-      # 👇 This is the Step 5 "quality-of-life" summary
-      - name: Add CVE list to job summary
-        run: |
-          echo "### OSV Scanner — CVE Summary" >> $GITHUB_STEP_SUMMARY
-          jq -r '
-            .results[]?.packages[]? as $p
-            | $p.package.name as $pkg
-            | $p.vulnerabilities[]?
-            | "- \($pkg) : \(.id) | fixed: \(.fixedVersion // \"n/a\") | severity: \((.severity[0].score // .database_specific.severity // \"n/a\"))"
-          ' osv-results-clean.json | sort -u >> $GITHUB_STEP_SUMMARY || echo "No CVEs found" >> $GITHUB_STEP_SUMMARY
+            zap-baseline.json
+            zap-baseline.html
+          if-no-files-found: warn
