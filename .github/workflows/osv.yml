@@ -55,11 +55,10 @@ jobs:
             osv-results-clean.json
           if-no-files-found: warn
 
-      # 8) Append a readable summary to the job page:
-      #    - Critical CVEs table
-      #    - All CVEs ordered by severity
-      #    - Optional grouped-by-package view (collapsible)
-      - name: Add CVE list to job summary (Critical, All ordered, Grouped)
+      # Step 8: Append just two views to the job summary:
+      #         (1) Critical CVEs table, then
+      #         (2) Findings grouped by package (all severities)
+      - name: Add CVE list to job summary (Critical + Grouped by Package)
         shell: bash
         run: |
           set -eo pipefail
@@ -67,136 +66,97 @@ jobs:
           echo "## OSV Scanner — Summary" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
-          # Write the jq program to a file using a *literal* heredoc to avoid YAML/Bash quoting issues.
-          cat > jq_prog.jq <<'JQ'
-          def cvss_num:
-            (.severity[]?.score // empty
+          # --- Pick whichever JSON exists & is valid (raw first, else cleaned) ---
+          JSON_FILE="osv-results.json"
+          if [ ! -s "$JSON_FILE" ] || ! jq -e . "$JSON_FILE" >/dev/null 2>&1; then
+            JSON_FILE="osv-results-clean.json"
+          fi
+          if [ ! -s "$JSON_FILE" ] || ! jq -e . "$JSON_FILE" >/devNull 2>&1; then
+            echo "_No results file found or JSON invalid._" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # --- Write a tiny jq program to normalize rows (robust but simple) ---
+          # We:
+          #  - prefer CVE from aliases[]; else fallback to the advisory id
+          #  - detect "Critical" via explicit string OR CVSS numeric >= 9.0
+          #  - pull a fixed version from common locations
+          cat > jq_rows.jq <<'JQ'
+          def cvss_num($v):
+            ($v.severity[]?.score // empty
              | capture("(?<num>[0-9]+\\.[0-9]+)")?.num // empty
              | tonumber?);
 
-          def sev_label:
-            (.database_specific.severity // (.severity[]?.score // "") | ascii_upcase) as $s
-            | if   ($s | test("CRITICAL")) then "CRITICAL"
-              elif ($s | test("HIGH"))     then "HIGH"
-              elif ($s | test("MODERATE|MEDIUM")) then "MEDIUM"
-              elif ($s | test("LOW"))      then "LOW"
-              else
-                (cvss_num as $n
-                 | if   ($n>=9) then "CRITICAL"
-                   elif ($n>=7) then "HIGH"
-                   elif ($n>=4) then "MEDIUM"
-                   elif ($n>0) then "LOW"
-                   else "n/a" end)
-              end;
+          def is_critical($v):
+            (($v.database_specific.severity // ($v.severity[]?.score // "")) | ascii_upcase) as $s
+            | ( ($s | contains("CRITICAL"))
+                or (cvss_num($v) // 0) >= 9 );
 
-          def rank($l):
-            if   $l=="CRITICAL" then 4
-            elif $l=="HIGH"     then 3
-            elif $l=="MEDIUM"   then 2
-            elif $l=="LOW"      then 1
-            else 0 end;
+          def cve_id($v):
+            (($v.aliases[]? | select(startswith("CVE-"))) // $v.id // "n/a");
 
-          # Prefer a CVE alias; otherwise use advisory ID (GHSA/OSV)
-          def cve: ((.aliases[]? | select(startswith("CVE-"))) // .id // "n/a");
+          def fixed_ver($v):
+            ($v.fixedVersion // ($v.affected[]?.ranges[]?.events[]? | select(has("fixed")) | .fixed) // "n/a");
 
-          # Try to extract a fixed version from common locations
-          def fixed:
-            (.fixedVersion // (.affected[]?.ranges[]?.events[]? | select(has("fixed")) | .fixed) // "n/a");
-
-          [ .results[]?
-            | .packages[]? as $p
-            | ($p.package.name // "n/a") as $pkg
+          [ ((.results // [])[])            as $r
+            | (($r.packages // [])[])       as $p
+            | ($p.package.name    // "n/a") as $pkg
             | ($p.package.version // "n/a") as $ver
-            | $p.vulnerabilities[]?
+            | (($p.vulnerabilities // [])[]) as $v
             | { pkg:   $pkg,
                 ver:   $ver,
-                cve:   (cve),
-                sev:   (sev_label),
-                fixed: (fixed) } ] as $rows
-          | $rows
-          | map(. + { rank: (rank(.sev)) })
+                cve:   (cve_id($v)),
+                crit:  (is_critical($v)),
+                fixed: (fixed_ver($v)) } ]
           JQ
 
-          # Normalize all rows once
-          rows_json="$(jq -c -f jq_prog.jq osv-results.json || true)"
+          # Build normalized rows once
+          rows_json="$(jq -c -f jq_rows.jq "$JSON_FILE" || true)"
           if [ -z "$rows_json" ] || [ "$rows_json" = "null" ]; then
             echo "_No results parsed._" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
-          # KPIs line (quick glance)
-          kpis="$(printf '%s\n' "$rows_json" | jq -r '
-            def cnt($l): map(select(.sev==$l)) | length;
-            . as $r
-            | "Total vulns: \(\$r|length)  |  Critical: \(\$r|cnt(\"CRITICAL\"))  |  High: \(\$r|cnt(\"HIGH\"))  |  Medium: \(\$r|cnt(\"MEDIUM\"))  |  Low: \(\$r|cnt(\"LOW\"))"
-          ')"
-          echo "$kpis" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-
-          # 8a) Critical-only table
+          ############################
+          # 1) Critical CVEs (top)
+          ############################
           echo "### Critical CVEs" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
           crit_rows="$(printf '%s\n' "$rows_json" | jq -r '
-            . | map(select(.sev=="CRITICAL"))
-              | sort_by(-.rank, .pkg, .cve)
+            map(select(.crit))                # keep only critical rows
+              | sort_by(.pkg, .cve)            # stable order
               | .[]
-              | "| \(.pkg) | \(.ver) | \(.cve) | \(.sev) | \(.fixed) |"
-          ')"
+              | "| \(.pkg) | \(.ver) | \(.cve) | \(.fixed) |"
+            ')"
 
-          if [ -z "$crit_rows" ]; then
-            echo "_No Critical CVEs found._" >> "$GITHUB_STEP_SUMMARY"
-          else
-            {
-              echo "| Package | Version | CVE | Severity | Fixed |"
-              echo "|---|---|---|---|---|"
-              printf "%s\n" "$crit_rows"
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
+            if [ -z "$crit_rows" ]; then
+              echo "_No Critical CVEs found._" >> "$GITHUB_STEP_SUMMARY"
+            else
+              {
+                echo "| Package | Version | CVE | Fixed |"
+                echo "|---|---|---|---|"
+                printf "%s\n" "$crit_rows"
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
 
-          echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
 
-          # 8b) All CVEs ordered by severity
-          echo "### All CVEs (ordered by severity)" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
+            ##########################################
+            # 2) Findings grouped by Package (all)
+            ##########################################
+            echo "### Findings grouped by Package" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
 
-          all_rows="$(printf '%s\n' "$rows_json" | jq -r '
-            . | sort_by(-.rank, .pkg, .cve)
+            # For each package@version, render a small sub-table: CVE | Critical? | Fixed
+            printf '%s\n' "$rows_json" | jq -r '
+              group_by(.pkg + "@" + .ver)
+              | map({ pkg: (.[0].pkg), ver: (.[0].ver), items: (sort_by(.cve)) })
               | .[]
-              | "| \(.pkg) | \(.ver) | \(.cve) | \(.sev) | \(.fixed) |"
-          ')"
-
-          if [ -z "$all_rows" ]; then
-            echo "_No CVEs found._" >> "$GITHUB_STEP_SUMMARY"
-          else
-            {
-              echo "| Package | Version | CVE | Severity | Fixed |"
-              echo "|---|---|---|---|---|"
-              printf "%s\n" "$all_rows"
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-
-          # 8c) Collapsible: Grouped by package
-          echo "<details>" >> "$GITHUB_STEP_SUMMARY"
-          echo "<summary><strong>Findings grouped by Package</strong> (click to expand)</summary>" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-
-          printf '%s\n' "$rows_json" | jq -r '
-            . as $r
-            | group_by(.pkg + "@" + .ver)
-            | map({
-                pkg: (.[0].pkg),
-                ver: (.[0].ver),
-                count: length,
-                items: (sort_by(-.rank, .cve))
-              })
-            | .[]
-            | "<br/>\n<strong>\(.pkg)@\(.ver)</strong> — \(.count) issue(s)\n\n"
-              + "| CVE | Severity | Fixed |\n|---|---|---|\n"
-              + ( .items | map("| \(.cve) | \(.sev) | \(.fixed) |") | join("\n") )
-              + "\n"
-          ' >> "$GITHUB_STEP_SUMMARY"
-
-          echo "</details>" >> "$GITHUB_STEP_SUMMARY"
+              | "<br/>\n**\(.pkg)@\(.ver)**\n\n"
+                + "| CVE | Critical? | Fixed |\n|---|---|---|\n"
+                + ( .items
+                    | map("| \(.cve) | \((if .crit then \"Yes\" else \"No\" end)) | \(.fixed) |")
+                    | join("\n") )
+                + "\n"
+            ' >> "$GITHUB_STEP_SUMMARY"
