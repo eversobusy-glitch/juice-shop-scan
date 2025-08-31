@@ -1,14 +1,19 @@
 # .github/workflows/00-smoke.yml
-name: CI smoke & integrity
+name: CI smoke & integrity  # Workflow name shown in GitHub Actions UI
+
 on:
-  push: { branches: [ master, main ] }
-  pull_request:
+  push:                     # Trigger the workflow on push events
+    branches: [master, main]  # Only run on pushes to master or main branches
+  pull_request:             # Also run on pull requests targeting these branches
+
 jobs:
-  smoke:
-    runs-on: ubuntu-latest
+  smoke:                    # Job name: a lightweight integrity check
+    runs-on: ubuntu-latest  # Use the latest Ubuntu runner provided by GitHub
+
     steps:
-      - uses: actions/checkout@v4      # Get the repo onto the runner
-      - name: Verify Node project
-        run: |
-          ls -la                        # Evidence in logs
-          test -f package.json && echo "Found package.json ✅"
+      - uses: actions/checkout@v4  # Step 1: Check out the repo code onto the runner
+
+      - name: Verify Node project  # Step 2: Confirm it's a Node.js project
+        run: |                     # Run shell commands
+          ls -la                  # List all files for visibility in logs
+          test -f package.json && echo "Found package.json ✅"  # Check for package.json at root
