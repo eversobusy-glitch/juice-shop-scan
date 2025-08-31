@@ -1,23 +1,14 @@
+# .github/workflows/00-smoke.yml
 name: CI smoke & integrity
-
 on:
-  push:
-    branches: [ master, main ]
+  push: { branches: [ master, main ] }
   pull_request:
-
 jobs:
   smoke:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Show repo layout
+      - uses: actions/checkout@v4      # Get the repo onto the runner
+      - name: Verify Node project
         run: |
-          echo "PWD: $(pwd)"
-          ls -la
-
-      - name: Verify package.json is at repo root
-        run: |
-          test -f package.json && echo "Found package.json ✅" || (echo "package.json NOT found at root ❌"; exit 1)
-
-      - run: echo "Actions are working ✅"
+          ls -la                        # Evidence in logs
+          test -f package.json && echo "Found package.json ✅"
