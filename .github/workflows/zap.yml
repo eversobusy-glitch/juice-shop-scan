@@ -1,6 +1,7 @@
 name: OWASP ZAP DAST
 on:
-  push: { branches: [ master, main ] }
+  push:
+    branches: [ master, main ]
   pull_request:
   workflow_dispatch:
 
@@ -8,48 +9,42 @@ jobs:
   zap:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      # 1) Create an isolated Docker network for the app and ZAP
       - name: Create Docker network
         run: docker network create zapnet || true
 
-      # 2) Start Juice Shop in a container on that network
       - name: Start Juice Shop (Docker)
         run: |
           set -euxo pipefail
-          docker pull bkimminich/juice-shop
+          docker pull bkimminich/juice-shop:latest
           docker rm -f juice || true
-          docker run -d --name juice --network zapnet -p 3000:3000 bkimminich/juice-shop
+          docker run -d --name juice --network zapnet -p 3000:3000 bkimminich/juice-shop:latest
 
-      # 3) Wait for readiness (avoid failing fast)
-      - name: Wait for app up on localhost:3000
+      - name: Wait for app on localhost:3000
         run: |
+          set -e
           for i in {1..60}; do
             if curl -fsS http://localhost:3000/ >/dev/null; then
-              echo "Juice Shop is up"; exit 0
+              echo "Juice Shop is up"
+              exit 0
             fi
             sleep 2
           done
-          echo "App did not start in time" >&2; exit 1
+          echo "App did not start in time" >&2
+          exit 1
 
-      # 4) Run ZAP Baseline on the same Docker network, force reports into workspace
-      - name: ZAP Baseline via Docker (network: zapnet) → write reports
+      - name: ZAP Baseline via Docker (same network) → write reports
         run: |
           set -euxo pipefail
           docker pull owasp/zap2docker-stable
-          # Target the container by its name on the shared network
-          TARGET="http://juice:3000"
-          docker run --rm --network zapnet -v "$PWD:/zap/wrk" owasp/zap2docker-stable zap-baseline.py \
-            -t "$TARGET" \
-            -a \
-            -m 5 \
+          docker run --rm --network zapnet -v "$PWD:/zap/wrk" owasp/zap2docker-stable \
+            zap-baseline.py -t http://juice:3000 -a -m 5 \
             -J /zap/wrk/zap-baseline.json \
             -r /zap/wrk/zap-baseline.html || true
-          echo "== workspace =="
           ls -la
 
-      # 5) Always upload the reports (even if ZAP found issues)
       - name: Upload ZAP reports
         uses: actions/upload-artifact@v4
         with:
