@@ -1,143 +1,154 @@
 # .github/workflows/osv.yml
-# Scan npm dependencies with Google OSV-Scanner (SCA),
-# upload JSON artifacts, and print a simple summary:
-# (1) Critical CVEs, then (2) Grouped by Package.
-
-name: OSV Scanner (SCA)
+name: OSV Scanner (SCA)  # Workflow name shown in GitHub Actions UI
 
 on:
-  push:
-    branches: [ master, main ]
-  pull_request:
+  push:                  # Trigger the workflow on push events
+    branches: [master, main]  # Only run on pushes to master or main branches
+  pull_request:          # Also run on pull requests targeting these branches
 
 jobs:
-  osv-scanner:
-    runs-on: ubuntu-latest
+  osv-scanner:           # Job name: runs the OSV Scanner for SCA
+    runs-on: ubuntu-latest  # Use the latest Ubuntu runner provided by GitHub
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4  # Step 1: Check out the repo code onto the runner
 
-      - name: Setup Node.js (LTS 18)
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4  # Step 2: Set up Node.js environment
         with:
-          node-version: 18
+          node-version: 18          # Specify Node.js version (LTS)
 
-      - name: Generate package-lock.json (safe)
+      # Step 3: Safely generate a lockfile without executing install scripts
+      - name: Generate package-lock.json
         run: npm install --package-lock-only --ignore-scripts
 
+      # Step 4: Install jq (used for parsing and cleaning JSON output)
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
+      # Step 5: Download and install the OSV Scanner binary
       - name: Install OSV-Scanner
         run: |
           curl -sSfL https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_amd64 -o osv-scanner
-          chmod +x osv-scanner
-          sudo mv osv-scanner /usr/local/bin/osv-scanner
+          chmod +x osv-scanner && sudo mv osv-scanner /usr/local/bin/
 
+      # Step 6: Run OSV Scanner on the lockfile and clean the output
       - name: Run OSV-Scanner → JSON
         run: |
-          set -e
+          # Scan the lockfile and save raw results
           osv-scanner --lockfile=package-lock.json --format json > osv-results.json || true
+
+          # Remove noisy fields for readability (e.g., package_path)
           jq 'del(.results[]?.packages[]?.package_path)' osv-results.json > osv-results-clean.json
 
-      - name: Upload OSV results (raw + cleaned)
+      # Step 7: Upload raw and cleaned results as artifacts
+      - name: Upload OSV results
         uses: actions/upload-artifact@v4
         with:
           name: osv-results
           path: |
             osv-results.json
             osv-results-clean.json
-          if-no-files-found: warn
 
-      # === Summary: Critical CVEs + Grouped-by-Package ===
+      # Step 8: Append a human-readable CVE summary to the GitHub job page
       - name: Add CVE list to job summary (Critical + Grouped by Package)
         shell: bash
         run: |
           set -eo pipefail
 
-          echo "## OSV Scanner — Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "## OSV Scanner — Critical CVEs" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
-          # Pick whichever JSON exists & is valid (raw first, then cleaned)
-          JSON_FILE="osv-results.json"
-          if [ ! -s "$JSON_FILE" ] || ! jq -e . "$JSON_FILE" >/dev/null 2>&1; then
-            JSON_FILE="osv-results-clean.json"
-          fi
-          if [ ! -s "$JSON_FILE" ] || ! jq -e . "$JSON_FILE" >/dev/null 2>&1; then
-            echo "_No results file found or JSON invalid._" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
+          # ----- helper jq program (as a HEREDOC for readability) -----
+          JQ_PROG='
+            # Extract a numeric from severity[].score when it contains a CVSS vector or number
+            def cvss_num:
+              (.severity[]?.score // empty
+              | capture("(?<num>[0-9]+\\.[0-9]+)")?.num // empty
+              | tonumber? );
 
-          # jq program to normalize rows
-          cat > jq_rows.jq <<'JQ'
-          def cvss_num($v):
-            ($v.severity[]?.score // empty
-             | capture("(?<num>[0-9]+\\.[0-9]+)")?.num // empty
-             | tonumber?);
+            # Produce a clean severity label from string or numeric
+            def sev_label:
+              (.database_specific.severity // (.severity[]?.score // "") | ascii_upcase) as $s
+              | if ($s | test("CRITICAL")) then "CRITICAL"
+                elif ($s | test("HIGH")) then "HIGH"
+                elif ($s | test("MODERATE|MEDIUM")) then "MEDIUM"
+                elif ($s | test("LOW")) then "LOW"
+                else
+                  (cvss_num as $n
+                   | if ($n>=9) then "CRITICAL"
+                      elif ($n>=7) then "HIGH"
+                      elif ($n>=4) then "MEDIUM"
+                      elif ($n>0) then "LOW"
+                     else "n/a" end)
+                end;
 
-          def is_critical($v):
-            (($v.database_specific.severity // ($v.severity[]?.score // "")) | ascii_upcase) as $s
-            | ( ($s | contains("CRITICAL"))
-                or (cvss_num($v) // 0) >= 9 );
+            # Map severity label to a rank for sorting (used inside groups)
+            def rank($l):
+              if   $l=="CRITICAL" then 4
+              elif $l=="HIGH"     then 3
+              elif $l=="MEDIUM"   then 2
+              elif $l=="LOW"      then 1
+              else 0 end;
 
-          def cve_id($v):
-            (($v.aliases[]? | select(startswith("CVE-"))) // $v.id // "n/a");
+            # Prefer a CVE alias, else advisory ID
+            def cve: ((.aliases[]? | select(startswith("CVE-"))) // .id // "n/a");
 
-          def fixed_ver($v):
-            ($v.fixedVersion // ($v.affected[]?.ranges[]?.events[]? | select(has("fixed")) | .fixed) // "n/a");
+            # Extract a fixed version if available
+            def fixed:
+              (.fixedVersion // (.affected[]?.ranges[]?.events[]? | select(has("fixed")) | .fixed) // "n/a");
 
-          [ ((.results // [])[])            as $r
-            | (($r.packages // [])[])       as $p
-            | ($p.package.name    // "n/a") as $pkg
-            | ($p.package.version // "n/a") as $ver
-            | (($p.vulnerabilities // [])[]) as $v
-            | { pkg:   $pkg,
-                ver:   $ver,
-                cve:   (cve_id($v)),
-                crit:  (is_critical($v)),
-                fixed: (fixed_ver($v)) } ]
-          JQ
+            # Build a normalized row list
+            [ .results[]?
+              | .packages[]? as $p
+              | ($p.package.name // "n/a") as $pkg
+              | ($p.package.version // "n/a") as $ver
+              | $p.vulnerabilities[]?
+              | { pkg: $pkg,
+                  ver: $ver,
+                  cve: (cve),
+                  sev: (sev_label),
+                  fixed: (fixed) } ] as $rows
+            | $rows
+            | map(. + { rank: (rank(.sev)) })
+          '
 
-          rows_json="$(jq -c -f jq_rows.jq "$JSON_FILE" || true)"
+          # Generate JSON rows once
+          rows_json="$(jq -c "${JQ_PROG}" osv-results.json || true)"
           if [ -z "$rows_json" ] || [ "$rows_json" = "null" ]; then
             echo "_No results parsed._" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
-          # 1) Critical-only table
-          echo "### Critical CVEs" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-
+          # --- Table 1: Critical-only (top) ---
           crit_rows="$(printf '%s\n' "$rows_json" | jq -r '
-            map(select(.crit)) | sort_by(.pkg, .cve) | .[]
-            | "| \(.pkg) | \(.ver) | \(.cve) | \(.fixed) |"
+            . | map(select(.sev == "CRITICAL"))
+              | sort_by(.pkg, .cve)
+              | .[]
+             | "| \(.pkg) | \(.ver) | \(.cve) | \(.sev) | \(.fixed) |"
           ')"
 
           if [ -z "$crit_rows" ]; then
             echo "_No Critical CVEs found._" >> "$GITHUB_STEP_SUMMARY"
           else
             {
-              echo "| Package | Version | CVE | Fixed |"
-              echo "|---|---|---|---|"
+              echo "| Package | Version | CVE | Severity | Fixed |"
+              echo "|---|---|---|---|---|"
               printf "%s\n" "$crit_rows"
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
-
-          # 2) Grouped by Package (all severities)
-          echo "### Findings grouped by Package" >> "$GITHUB_STEP_SUMMARY"
+          echo "## OSV Scanner — Findings grouped by Package" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
+          # --- Table 2: Grouped by package (all severities) ---
           printf '%s\n' "$rows_json" | jq -r '
             group_by(.pkg + "@" + .ver)
-            | map({ pkg: (.[0].pkg), ver: (.[0].ver), items: (sort_by(.cve)) })
+            | map({ pkg: (.[0].pkg), ver: (.[0].ver), items: (sort_by(-.rank, .cve)) })
             | .[]
             | "<br/>\n**\(.pkg)@\(.ver)**\n\n"
-              + "| CVE | Critical? | Fixed |\n|---|---|---|\n"
-              + ( .items
-                  | map("| \(.cve) | \((if .crit then \"Yes\" else \"No\" end)) | \(.fixed) |")
-                  | join("\n") )
+              + "| CVE | Severity | Fixed |\n|---|---|---|\n"
+              + ( .items | map("| \(.cve) | \(.sev) | \(.fixed) |") | join("\n") )
               + "\n"
           ' >> "$GITHUB_STEP_SUMMARY"
+  
