@@ -50,105 +50,15 @@ jobs:
             osv-results-clean.json
 
       # Step 8: Append a human-readable CVE summary to the GitHub job page
-      - name: Add CVE list to job summary (Critical + Grouped by Package)
-        shell: bash
+      - name: Add CVE list to job summary
         run: |
-          set -eo pipefail
+          echo "### OSV Scanner — CVE Summary" >> $GITHUB_STEP_SUMMARY
 
-          echo "## OSV Scanner — Critical CVEs" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-
-          # ----- helper jq program (as a HEREDOC for readability) -----
-          JQ_PROG='
-            # Extract a numeric from severity[].score when it contains a CVSS vector or number
-            def cvss_num:
-              (.severity[]?.score // empty
-              | capture("(?<num>[0-9]+\\.[0-9]+)")?.num // empty
-              | tonumber? );
-
-            # Produce a clean severity label from string or numeric
-            def sev_label:
-              (.database_specific.severity // (.severity[]?.score // "") | ascii_upcase) as $s
-              | if ($s | test("CRITICAL")) then "CRITICAL"
-                elif ($s | test("HIGH")) then "HIGH"
-                elif ($s | test("MODERATE|MEDIUM")) then "MEDIUM"
-                elif ($s | test("LOW")) then "LOW"
-                else
-                  (cvss_num as $n
-                   | if ($n>=9) then "CRITICAL"
-                      elif ($n>=7) then "HIGH"
-                      elif ($n>=4) then "MEDIUM"
-                      elif ($n>0) then "LOW"
-                     else "n/a" end)
-                end;
-
-            # Map severity label to a rank for sorting (used inside groups)
-            def rank($l):
-              if   $l=="CRITICAL" then 4
-              elif $l=="HIGH"     then 3
-              elif $l=="MEDIUM"   then 2
-              elif $l=="LOW"      then 1
-              else 0 end;
-
-            # Prefer a CVE alias, else advisory ID
-            def cve: ((.aliases[]? | select(startswith("CVE-"))) // .id // "n/a");
-
-            # Extract a fixed version if available
-            def fixed:
-              (.fixedVersion // (.affected[]?.ranges[]?.events[]? | select(has("fixed")) | .fixed) // "n/a");
-
-            # Build a normalized row list
-            [ .results[]?
-              | .packages[]? as $p
-              | ($p.package.name // "n/a") as $pkg
-              | ($p.package.version // "n/a") as $ver
-              | $p.vulnerabilities[]?
-              | { pkg: $pkg,
-                  ver: $ver,
-                  cve: (cve),
-                  sev: (sev_label),
-                  fixed: (fixed) } ] as $rows
-            | $rows
-            | map(. + { rank: (rank(.sev)) })
-          '
-
-          # Generate JSON rows once
-          rows_json="$(jq -c "${JQ_PROG}" osv-results.json || true)"
-          if [ -z "$rows_json" ] || [ "$rows_json" = "null" ]; then
-            echo "_No results parsed._" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
-          # --- Table 1: Critical-only (top) ---
-          crit_rows="$(printf '%s\n' "$rows_json" | jq -r '
-            . | map(select(.sev == "CRITICAL"))
-              | sort_by(.pkg, .cve)
-              | .[]
-             | "| \(.pkg) | \(.ver) | \(.cve) | \(.sev) | \(.fixed) |"
-          ')"
-
-          if [ -z "$crit_rows" ]; then
-            echo "_No Critical CVEs found._" >> "$GITHUB_STEP_SUMMARY"
-          else
-            {
-              echo "| Package | Version | CVE | Severity | Fixed |"
-              echo "|---|---|---|---|---|"
-              printf "%s\n" "$crit_rows"
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "## OSV Scanner — Findings grouped by Package" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-
-          # --- Table 2: Grouped by package (all severities) ---
-          printf '%s\n' "$rows_json" | jq -r '
-            group_by(.pkg + "@" + .ver)
-            | map({ pkg: (.[0].pkg), ver: (.[0].ver), items: (sort_by(-.rank, .cve)) })
-            | .[]
-            | "<br/>\n**\(.pkg)@\(.ver)**\n\n"
-              + "| CVE | Severity | Fixed |\n|---|---|---|\n"
-              + ( .items | map("| \(.cve) | \(.sev) | \(.fixed) |") | join("\n") )
-              + "\n"
-          ' >> "$GITHUB_STEP_SUMMARY"
-  
+          # Extract CVE details and format them for readability
+          jq -r '
+            .results[]?.packages[]? as $p
+            | $p.package.name as $pkg
+            | $p.vulnerabilities[]?
+            | "- \($pkg) : \(.id) | fixed: \(.fixedVersion // \"n/a\") | severity: \((.severity[0].score // .database_specific.severity // \"n/a\"))"
+          ' osv-results-clean.json | sort -u >> $GITHUB_STEP_SUMMARY \
+          || echo "No CVEs found" >> $GITHUB_STEP_SUMMARY
