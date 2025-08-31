@@ -1,7 +1,7 @@
-name: ZAP Baseline (minimal, robust)
+# .github/workflows/zap.yml
+name: OWASP ZAP DAST
 on:
-  push:
-    branches: [ master, main ]
+  push: { branches: [ master, main ] }
   pull_request:
 
 jobs:
@@ -10,30 +10,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: ZAP via Docker → write reports to workspace
-        shell: bash
+      # Run the official ZAP baseline inside Docker.
+      # We scan the public Juice Shop demo to simulate a real target.
+      - name: ZAP baseline via Docker → write reports
         run: |
-          set +e
           TARGET="https://juice-shop.herokuapp.com"
-
-          echo "Pulling ZAP image…"
-          docker pull owasp/zap2docker-stable || true
-
-          echo "Running baseline scan…"
-          docker run --rm -v "$PWD:/zap/wrk" owasp/zap2docker-stable \
-            zap-baseline.py -t "$TARGET" -m 5 -a \
+          docker pull owasp/zap2docker-stable
+          docker run --rm -v "$PWD:/zap/wrk" owasp/zap2docker-stable zap-baseline.py \
+            -t "$TARGET" -a -m 5 \
             -J /zap/wrk/zap-baseline.json \
-            -r /zap/wrk/zap-baseline.html || true
+            -r /zap/wrk/zap-baseline.html || true   # keep CI green even if ZAP exits non-zero
+          echo "Workspace contents:"; ls -la
 
-          echo "Workspace after scan:"
-          ls -la
-
-          # Guaranteed outputs (create placeholders if ZAP didn't write them)
-          [ -s zap-baseline.json ] || echo '{"note":"ZAP did not produce JSON (site unreachable or Docker/network issue)."}' > zap-baseline.json
-          [ -s zap-baseline.html ] || echo '<html><body><p>ZAP did not produce HTML (see job logs).</p></body></html>' > zap-baseline.html
-
+      # Upload both human- and machine-readable reports
       - name: Upload ZAP reports
-        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: zap-baseline
