@@ -1,8 +1,8 @@
-# .github/workflows/zap.yml
 name: OWASP ZAP DAST
 on:
   push: { branches: [ master, main ] }
   pull_request:
+  workflow_dispatch:
 
 jobs:
   zap:
@@ -10,24 +10,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Run the official ZAP baseline inside Docker.
-      # We scan the public Juice Shop demo to simulate a real target.
-      - name: ZAP baseline via Docker → write reports
+      # 1) Sanity check: ensure target is up (fail here if not)
+      - name: Verify target is reachable
+        id: reach
         run: |
+          set -e
           TARGET="https://juice-shop.herokuapp.com"
+          echo "TARGET=$TARGET" >> $GITHUB_ENV
+          curl -sSIL "$TARGET" >/dev/null
+
+      # 2) Run ZAP baseline in Docker and FORCE reports into $PWD
+      #    '|| true' keeps CI green even if ZAP returns non-zero
+      - name: ZAP Baseline via Docker → write reports
+        run: |
+          set -euxo pipefail
           docker pull owasp/zap2docker-stable
           docker run --rm -v "$PWD:/zap/wrk" owasp/zap2docker-stable zap-baseline.py \
-            -t "$TARGET" -a -m 5 \
+            -t "$TARGET" \
+            -a \                # full passive rules
+            -m 5 \              # 5-minute max
             -J /zap/wrk/zap-baseline.json \
-            -r /zap/wrk/zap-baseline.html || true   # keep CI green even if ZAP exits non-zero
-          echo "Workspace contents:"; ls -la
+            -r /zap/wrk/zap-baseline.html || true
+          echo "== workspace =="
+          ls -la
 
-      # Upload both human- and machine-readable reports
+      # 3) Upload artifacts (HTML + JSON) regardless of ZAP exit code
       - name: Upload ZAP reports
         uses: actions/upload-artifact@v4
         with:
           name: zap-baseline
           path: |
-            zap-baseline.json
             zap-baseline.html
+            zap-baseline.json
           if-no-files-found: warn
