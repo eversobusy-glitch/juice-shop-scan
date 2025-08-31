@@ -1,5 +1,5 @@
 # .github/workflows/semgrep.yml
-name: Semgrep SAST
+name: Semgrep (SAST)
 on:
   push: { branches: [ master, main ] }
   pull_request:
