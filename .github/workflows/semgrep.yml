@@ -1,28 +1,33 @@
 # .github/workflows/semgrep.yml
-name: Semgrep (SAST)
+name: Semgrep (SAST)  # Workflow name shown in the GitHub Actions UI
+
 on:
-  push: { branches: [ master, main ] }
-  pull_request:
+  push:               # Trigger the workflow on push events
+    branches: [master, main]  # Only run on pushes to master or main branches
+  pull_request:       # Also run on pull requests targeting these branches
 
 jobs:
-  semgrep:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+  semgrep:            # Job name: runs Semgrep for static analysis
+    runs-on: ubuntu-latest  # Use the latest Ubuntu runner provided by GitHub
 
-      # Install the CLI so we control output location/format
+    steps:
+      - uses: actions/checkout@v4  # Step 1: Check out the repository code
+
+      # Step 2: Install Semgrep CLI manually to control version and output format
       - name: Install Semgrep
         run: |
-          python3 -m pip install --upgrade pip
-          pip install semgrep
+          python3 -m pip install --upgrade pip  # Upgrade pip to avoid compatibility issues
+          pip install semgrep                   # Install Semgrep from PyPI
 
-      # Use the OWASP Top-10 ruleset; write SARIF; never fail CI on findings
+      # Step 3: Run Semgrep using OWASP Top 10 ruleset
+      # Output results in SARIF format for integration with GitHub Security tab
+      # Use `|| true` to prevent CI from failing on findings (informational only)
       - name: Run Semgrep (OWASP Top 10) → SARIF
         run: semgrep --config p/owasp-top-ten --sarif -o semgrep.sarif . || true
 
-      # Keep evidence as a downloadable artifact
+      # Step 4: Upload SARIF results as an artifact for download or inspection
       - name: Upload Semgrep SARIF
         uses: actions/upload-artifact@v4
         with:
-          name: semgrep-sarif
-          path: semgrep.sarif
+          name: semgrep-sarif                  # Artifact name shown in GitHub UI
+          path: semgrep.sarif                  # Path to the SARIF output file
