@@ -1,7 +1,7 @@
+# .github/workflows/semgrep.yml
 name: Semgrep SAST
 on:
-  push:
-    branches: [ master, main ]
+  push: { branches: [ master, main ] }
   pull_request:
 
 jobs:
@@ -10,33 +10,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Install Semgrep on the runner (not in a container)
-      - name: Install Semgrep CLI
+      # Install the CLI so we control output location/format
+      - name: Install Semgrep
         run: |
           python3 -m pip install --upgrade pip
           pip install semgrep
 
-      # Run Semgrep and emit SARIF to a file we control
+      # Use the OWASP Top-10 ruleset; write SARIF; never fail CI on findings
       - name: Run Semgrep (OWASP Top 10) → SARIF
-        run: |
-          semgrep --config p/owasp-top-ten --sarif -o semgrep.sarif . || true
+        run: semgrep --config p/owasp-top-ten --sarif -o semgrep.sarif . || true
 
-      # Prove the file exists (debug)
-      - name: Show files
-        run: |
-          ls -la
-          test -f semgrep.sarif && echo "semgrep.sarif created ✅" || (echo "No semgrep.sarif ❌"; exit 1)
-
-      # Upload the SARIF so you have evidence
+      # Keep evidence as a downloadable artifact
       - name: Upload Semgrep SARIF
         uses: actions/upload-artifact@v4
         with:
           name: semgrep-sarif
           path: semgrep.sarif
-
-      # (Optional) Add a quick summary to the run page
-      - name: Add Semgrep summary to job summary
-        run: |
-          sudo apt-get update && sudo apt-get install -y jq
-          echo "### Semgrep findings (first 30)" >> $GITHUB_STEP_SUMMARY
-          jq -r '.runs[].results[] | "- \(.ruleId) : \(.message.text)"' semgrep.sarif | head -n 30 >> $GITHUB_STEP_SUMMARY || echo "No findings" >> $GITHUB_STEP_SUMMARY
