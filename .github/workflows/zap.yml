@@ -10,31 +10,46 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 1) Sanity check: ensure target is up (fail here if not)
-      - name: Verify target is reachable
-        id: reach
-        run: |
-          set -e
-          TARGET="https://juice-shop.herokuapp.com"
-          echo "TARGET=$TARGET" >> $GITHUB_ENV
-          curl -sSIL "$TARGET" >/dev/null
+      # 1) Create an isolated Docker network for the app and ZAP
+      - name: Create Docker network
+        run: docker network create zapnet || true
 
-      # 2) Run ZAP baseline in Docker and FORCE reports into $PWD
-      #    '|| true' keeps CI green even if ZAP returns non-zero
-      - name: ZAP Baseline via Docker → write reports
+      # 2) Start Juice Shop in a container on that network
+      - name: Start Juice Shop (Docker)
+        run: |
+          set -euxo pipefail
+          docker pull bkimminich/juice-shop
+          docker rm -f juice || true
+          docker run -d --name juice --network zapnet -p 3000:3000 bkimminich/juice-shop
+
+      # 3) Wait for readiness (avoid failing fast)
+      - name: Wait for app up on localhost:3000
+        run: |
+          for i in {1..60}; do
+            if curl -fsS http://localhost:3000/ >/dev/null; then
+              echo "Juice Shop is up"; exit 0
+            fi
+            sleep 2
+          done
+          echo "App did not start in time" >&2; exit 1
+
+      # 4) Run ZAP Baseline on the same Docker network, force reports into workspace
+      - name: ZAP Baseline via Docker (network: zapnet) → write reports
         run: |
           set -euxo pipefail
           docker pull owasp/zap2docker-stable
-          docker run --rm -v "$PWD:/zap/wrk" owasp/zap2docker-stable zap-baseline.py \
+          # Target the container by its name on the shared network
+          TARGET="http://juice:3000"
+          docker run --rm --network zapnet -v "$PWD:/zap/wrk" owasp/zap2docker-stable zap-baseline.py \
             -t "$TARGET" \
-            -a \                # full passive rules
-            -m 5 \              # 5-minute max
+            -a \
+            -m 5 \
             -J /zap/wrk/zap-baseline.json \
             -r /zap/wrk/zap-baseline.html || true
           echo "== workspace =="
           ls -la
 
-      # 3) Upload artifacts (HTML + JSON) regardless of ZAP exit code
+      # 5) Always upload the reports (even if ZAP found issues)
       - name: Upload ZAP reports
         uses: actions/upload-artifact@v4
         with:
