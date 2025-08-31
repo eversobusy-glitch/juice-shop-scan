@@ -1,35 +1,46 @@
 # .github/workflows/osv.yml
-name: OSV Scanner (SCA)
+name: OSV Scanner (SCA)  # Workflow name shown in GitHub Actions UI
+
 on:
-  push: { branches: [ master, main ] }
-  pull_request:
+  push:                  # Trigger the workflow on push events
+    branches: [master, main]  # Only run on pushes to master or main branches
+  pull_request:          # Also run on pull requests targeting these branches
 
 jobs:
-  osv-scanner:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 18 }
+  osv-scanner:           # Job name: runs the OSV Scanner for SCA
+    runs-on: ubuntu-latest  # Use the latest Ubuntu runner provided by GitHub
 
-      # Safely create a lockfile (no scripts executed)
+    steps:
+      - uses: actions/checkout@v4  # Step 1: Check out the repo code onto the runner
+
+      - uses: actions/setup-node@v4  # Step 2: Set up Node.js environment
+        with:
+          node-version: 18          # Specify Node.js version (LTS)
+
+      # Step 3: Safely generate a lockfile without executing install scripts
       - name: Generate package-lock.json
         run: npm install --package-lock-only --ignore-scripts
 
+      # Step 4: Install jq (used for parsing and cleaning JSON output)
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
+      # Step 5: Download and install the OSV Scanner binary
       - name: Install OSV-Scanner
         run: |
           curl -sSfL https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_amd64 -o osv-scanner
           chmod +x osv-scanner && sudo mv osv-scanner /usr/local/bin/
 
-      # Scan the lockfile; keep raw + clean JSON for evidence and readability
+      # Step 6: Run OSV Scanner on the lockfile and clean the output
       - name: Run OSV-Scanner → JSON
         run: |
+          # Scan the lockfile and save raw results
           osv-scanner --lockfile=package-lock.json --format json > osv-results.json || true
+
+          # Remove noisy fields for readability (e.g., package_path)
           jq 'del(.results[]?.packages[]?.package_path)' osv-results.json > osv-results-clean.json
 
+      # Step 7: Upload raw and cleaned results as artifacts
       - name: Upload OSV results
         uses: actions/upload-artifact@v4
         with:
@@ -38,13 +49,16 @@ jobs:
             osv-results.json
             osv-results-clean.json
 
-      # Add a human-readable summary to the run page (no downloads needed)
+      # Step 8: Append a human-readable CVE summary to the GitHub job page
       - name: Add CVE list to job summary
         run: |
           echo "### OSV Scanner — CVE Summary" >> $GITHUB_STEP_SUMMARY
-          jq -r '.results[]?.packages[]? as $p
-                 | $p.package.name as $pkg
-                 | $p.vulnerabilities[]?
-                 | "- \($pkg) : \(.id) | fixed: \(.fixedVersion // \"n/a\") | severity: \((.severity[0].score // .database_specific.severity // \"n/a\"))"' \
-            osv-results-clean.json | sort -u >> $GITHUB_STEP_SUMMARY \
-            || echo "No CVEs found" >> $GITHUB_STEP_SUMMARY
+
+          # Extract CVE details and format them for readability
+          jq -r '
+            .results[]?.packages[]? as $p
+            | $p.package.name as $pkg
+            | $p.vulnerabilities[]?
+            | "- \($pkg) : \(.id) | fixed: \(.fixedVersion // \"n/a\") | severity: \((.severity[0].score // .database_specific.severity // \"n/a\"))"
+          ' osv-results-clean.json | sort -u >> $GITHUB_STEP_SUMMARY \
+          || echo "No CVEs found" >> $GITHUB_STEP_SUMMARY
